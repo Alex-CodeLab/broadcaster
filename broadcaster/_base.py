@@ -1,5 +1,5 @@
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any, AsyncGenerator, AsyncIterator, Dict, Optional
 from urllib.parse import urlparse
 
@@ -11,9 +11,9 @@ class Event:
 
     def __eq__(self, other: object) -> bool:
         return (
-            isinstance(other, Event)
-            and self.channel == other.channel
-            and self.message == other.message
+                isinstance(other, Event)
+                and self.channel == other.channel
+                and self.message == other.message
         )
 
     def __repr__(self) -> str:
@@ -51,6 +51,11 @@ class Broadcast:
 
             self._backend = MemoryBackend(url)
 
+        elif parsed_url.scheme == "zmq":
+            from broadcaster._backends.zmq import ZmqBackend
+
+            self._backend = ZmqBackend(url)
+
     async def __aenter__(self) -> "Broadcast":
         await self.connect()
         return self
@@ -81,11 +86,10 @@ class Broadcast:
     @asynccontextmanager
     async def subscribe(self, channel: str) -> AsyncIterator["Subscriber"]:
         queue: asyncio.Queue = asyncio.Queue()
-
         try:
             if not self._subscribers.get(channel):
                 await self._backend.subscribe(channel)
-                self._subscribers[channel] = set([queue])
+                self._subscribers[channel] = {queue}
             else:
                 self._subscribers[channel].add(queue)
 
@@ -104,11 +108,9 @@ class Subscriber:
         self._queue = queue
 
     async def __aiter__(self) -> Optional[AsyncGenerator]:
-        try:
+        with suppress(Unsubscribed):
             while True:
                 yield await self.get()
-        except Unsubscribed:
-            pass
 
     async def get(self) -> Event:
         item = await self._queue.get()
